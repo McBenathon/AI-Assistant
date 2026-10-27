@@ -86,6 +86,39 @@ def init_database():
             )
         """)
 
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS image_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                conversation_id INTEGER NOT NULL,
+                message_id INTEGER,
+                filename TEXT NOT NULL,
+                image_data BLOB NOT NULL,
+                created_at TEXT NOT NULL,
+
+                FOREIGN KEY (conversation_id)
+                    REFERENCES conversations(id)
+                    ON DELETE CASCADE,
+
+                FOREIGN KEY (message_id)
+                    REFERENCES messages(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
+        db.execute("""
+            CREATE TABLE IF NOT EXISTS web_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                message_id INTEGER NOT NULL,
+                title TEXT NOT NULL,
+                url TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+
+                FOREIGN KEY (message_id)
+                    REFERENCES messages(id)
+                    ON DELETE CASCADE
+            )
+        """)
+
 def create_conversation():
     with get_connection() as db:
         cursor = db.execute(
@@ -122,7 +155,9 @@ def get_messages(conversation_id):
 
 
 def get_model_messages(conversation_id):
+
     with get_connection() as db:
+
         rows = db.execute(
             """
             SELECT id, role, content
@@ -133,16 +168,22 @@ def get_model_messages(conversation_id):
             (conversation_id,)
         ).fetchall()
 
-        # Use the most recent 20 messages as model context.
+        # Keep the most recent 20 messages.
         recent_rows = rows[-20:]
 
         result = []
 
         for index, row in enumerate(recent_rows):
+
             content = row["content"]
 
-            # Include file content only for the most recent
-            # six messages, to avoid excessive context usage.
+            message = {
+                "role": row["role"],
+                "content": content
+            }
+
+            # Include attachments only within the
+            # most recent six messages.
             if index >= len(recent_rows) - 6:
 
                 files = db.execute(
@@ -155,7 +196,8 @@ def get_model_messages(conversation_id):
                 ).fetchall()
 
                 for file in files:
-                    content += (
+
+                    message["content"] += (
                         "\n\n[Attached file: "
                         + file["filename"]
                         + "]\n"
@@ -163,30 +205,45 @@ def get_model_messages(conversation_id):
                         + "\n[End of attached file]"
                     )
 
-            result.append({
-                "role": row["role"],
-                "content": content
-            })
+                # Include recently uploaded images.
+                if row["role"] == "user":
+
+                    images = db.execute(
+                        """
+                        SELECT image_data
+                        FROM image_attachments
+                        WHERE message_id = ?
+                        ORDER BY id ASC
+                        LIMIT 1
+                        """,
+                        (row["id"],)
+                    ).fetchall()
+
+                    if images:
+                        message["images"] = [
+                            image["image_data"]
+                            for image in images
+                        ]
+
+            result.append(message)
 
         return result
 
 
 def save_message(conversation_id, role, content):
     with get_connection() as db:
-        db.execute("""
+                db.execute(
+            """
             INSERT INTO messages (
                 conversation_id,
                 role,
                 content,
                 created_at
             )
-            VALUES (?, ?, ?, ?)
-        """, (
-            conversation_id,
-            role,
-            content,
-            datetime.now(timezone.utc).isoformat()
-        ))
+            VALUES (?, 'assistant', ?, ?)
+            """,
+            (conversation_id, assistant_content, now)
+        )
 
 
 def update_title(conversation_id, title):
@@ -401,7 +458,9 @@ def save_exchange(
     conversation_id,
     user_content,
     assistant_content,
-    attachment_id=None
+    attachment_id=None,
+    image_id=None,
+    web_sources=None
 ):
     now = datetime.now(timezone.utc).isoformat()
 
@@ -440,6 +499,27 @@ def save_exchange(
 
             if cursor.rowcount != 1:
                 raise ValueError("Attachment is unavailable.")
+
+        if image_id is not None:
+            cursor = db.execute(
+                """
+                UPDATE image_attachments
+                SET message_id = ?
+                WHERE id = ?
+                  AND conversation_id = ?
+                  AND message_id IS NULL
+                """,
+                (
+                    user_message_id,
+                    image_id,
+                    conversation_id
+                )
+            )
+
+            if cursor.rowcount != 1:
+                raise ValueError(
+                    "Image attachment is unavailable."
+                )
 
         db.execute(
             """
@@ -501,13 +581,109 @@ def get_display_messages(conversation_id):
                 (row["id"],)
             ).fetchall()
 
+            image = db.execute(
+                """
+                SELECT id, filename
+                FROM image_attachments
+                WHERE message_id = ?
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (row["id"],)
+            ).fetchone()
+
+            sources = db.execute(
+                """
+                SELECT title, url, description
+                FROM web_sources
+                WHERE message_id = ?
+                ORDER BY id ASC
+                """,
+                (row["id"],)
+            ).fetchall()
+
             result.append({
                 "role": row["role"],
                 "content": row["content"],
+
                 "attachments": [
                     attachment["filename"]
                     for attachment in attachments
-                ]
+                ],
+
+                "image": (
+                    dict(image)
+                    if image is not None
+                    else None
+                ),
+
+                "sources": [
+                    dict(source)
+                    for source in sources
+                ],
             })
 
         return result
+
+def save_image_attachment(
+    conversation_id,
+    filename,
+    image_data
+):
+    with get_connection() as db:
+        cursor = db.execute(
+            """
+            INSERT INTO image_attachments (
+                conversation_id,
+                filename,
+                image_data,
+                created_at
+            )
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                conversation_id,
+                filename,
+                image_data,
+                datetime.now(timezone.utc).isoformat()
+            )
+        )
+
+        return cursor.lastrowid
+
+
+def get_pending_image_attachment(
+    conversation_id,
+    image_id
+):
+    with get_connection() as db:
+        row = db.execute(
+            """
+            SELECT id, filename, image_data
+            FROM image_attachments
+            WHERE id = ?
+              AND conversation_id = ?
+              AND message_id IS NULL
+            """,
+            (image_id, conversation_id)
+        ).fetchone()
+
+        return dict(row) if row else None
+
+
+def get_image_attachment(
+    conversation_id,
+    image_id
+):
+    with get_connection() as db:
+        row = db.execute(
+            """
+            SELECT id, filename, image_data
+            FROM image_attachments
+            WHERE id = ?
+              AND conversation_id = ?
+            """,
+            (image_id, conversation_id)
+        ).fetchone()
+
+        return dict(row) if row else None
