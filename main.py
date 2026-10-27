@@ -1,7 +1,4 @@
-#.\.venv\Scripts\python.exe -m uvicorn main:app --reload 
-# npm.cmd run dev
 
-#ON STEP 2 OF MOST RECENT CHATGPT MESSAGE - Update the FastAPI request model
 
 import json
 from difflib import SequenceMatcher

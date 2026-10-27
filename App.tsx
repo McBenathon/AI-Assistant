@@ -83,16 +83,21 @@ const API = import.meta.env.DEV
 
 
 function App() {
+  
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  
   const [activeChat, setActiveChat] = useState<number | null>(null);
+  
   const [messages, setMessages] = useState<Message[]>([]);
+  
   const [input, setInput] = useState("");
+  
   const [loading, setLoading] = useState(false);
-
+  
   const [view, setView] = useState<View>("chat");
-
+  
   const [memories, setMemories] = useState<Memory[]>([]);
-
+  
   const [memoryInput, setMemoryInput] = useState("");
 
   const [memoryEnabled, setMemoryEnabled] = useState(true);
@@ -106,6 +111,7 @@ function App() {
   const [memoryError, setMemoryError] = useState("");
 
   const chatEndRef = useRef<HTMLDivElement>(null);
+  
   const sendingRef = useRef(false);
 
   const [suggestedMemory, setSuggestedMemory] =
